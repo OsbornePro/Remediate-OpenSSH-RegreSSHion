@@ -1,4 +1,3 @@
----
 - name: Check and install OpenSSH v9.8p1 if vulnerable
   hosts: all
   gather_facts: yes
