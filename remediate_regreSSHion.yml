@@ -1,0 +1,148 @@
+---
+- name: Check and install OpenSSH v9.8p1 if vulnerable
+  hosts: all
+  gather_facts: yes
+  tasks:
+    - name: Get SSH version
+      command: ssh -V
+      register: ssh_version_output
+      ignore_errors: yes
+
+    - name: Debug SSH version output
+      debug:
+        var: ssh_version_output
+
+    - name: Parse SSH version
+      set_fact:
+        ssh_version: "{{ (ssh_version_output.stderr if ssh_version_output.stderr else ssh_version_output.stdout).split()[0].split('_')[1] }}"
+      when: ssh_version_output.stderr is defined or ssh_version_output.stdout is defined
+
+    - name: Debug SSH version fact
+      debug:
+        msg: "Parsed SSH version: {{ ssh_version }}"
+      when: ssh_version is defined
+
+    - name: Determine vulnerability status
+      set_fact:
+        is_vulnerable: >
+          {{
+            (ssh_version is version('4.4p1', '<')) or
+            (ssh_version is version('8.5p1', '>=') and ssh_version is version('9.8p1', '<'))
+          }}
+      when: ssh_version is defined
+
+    - name: Display vulnerability status
+      debug:
+        msg: >
+          SSH version {{ ssh_version }} on host {{ inventory_hostname }} is
+          {{ 'vulnerable' if is_vulnerable else 'not vulnerable' }}.
+      when: ssh_version is defined
+
+    - name: Install dependencies on Debian-based systems
+      apt:
+        name: "{{ item }}"
+        state: present
+      with_items:
+        - build-essential
+        - zlib1g-dev
+        - libssl-dev
+        - libpam0g-dev
+        - libselinux1-dev
+        - pkg-config
+        - wget
+        - curl
+      when: ansible_facts['os_family'] == 'Debian' and is_vulnerable | bool
+      become: yes
+
+    - name: Install dependencies on RedHat-based systems
+      dnf:
+        name: "{{ item }}"
+        state: present
+      with_items:
+        - gcc
+        - make
+        - zlib-devel
+        - openssl-devel
+        - pam-devel
+        - libselinux-devel
+        - pkgconfig
+        - wget
+        - curl
+      when: ansible_facts['os_family'] == 'RedHat' and is_vulnerable | bool
+      become: yes
+
+    - name: Download OpenSSH v9.8p1 source code
+      get_url:
+        url: https://cdn.openbsd.org/pub/OpenBSD/OpenSSH/portable/openssh-9.8p1.tar.gz
+        dest: /tmp/openssh-9.8p1.tar.gz
+      when: is_vulnerable | bool
+      become: yes
+
+    - name: Extract OpenSSH v9.8p1 source code
+      unarchive:
+        src: /tmp/openssh-9.8p1.tar.gz
+        dest: /tmp/
+        remote_src: yes
+      when: is_vulnerable | bool
+      become: yes
+
+    - name: Find all locations of the ssh binary
+      find:
+        paths: /
+        patterns: ssh
+        file_type: file
+        recurse: yes
+      register: ssh_binaries
+      when: is_vulnerable | bool
+      become: yes
+
+    - name: Rename ssh binaries to ssh.old
+      command: mv {{ item.path }} {{ item.path }}.old
+      loop: "{{ ssh_binaries.files }}"
+      when: is_vulnerable | bool
+      become: yes
+
+    - name: Compile and install OpenSSH v9.8p1
+      shell: |
+        cd /tmp/openssh-9.8p1
+        ./configure
+        make
+        make install
+      when: is_vulnerable | bool
+      become: yes
+
+    - name: Copy new ssh binary to all locations
+      copy:
+        src: /usr/local/bin/ssh
+        dest: "{{ item.path }}"
+      loop: "{{ ssh_binaries.files }}"
+      when: is_vulnerable | bool
+      become: yes
+
+    - name: Clean up OpenSSH source code
+      file:
+        path: /tmp/openssh-9.8p1
+        state: absent
+      when: is_vulnerable | bool
+      become: yes
+
+    - name: Clean up OpenSSH source tarball
+      file:
+        path: /tmp/openssh-9.8p1.tar.gz
+        state: absent
+      when: is_vulnerable | bool
+      become: yes
+
+    - name: Restart SSH service on Debian-based systems
+      service:
+        name: ssh
+        state: restarted
+      when: ansible_facts['os_family'] == 'Debian' and is_vulnerable | bool
+      become: yes
+
+    - name: Restart SSH service on RedHat-based systems
+      service:
+        name: sshd
+        state: restarted
+      when: ansible_facts['os_family'] == 'RedHat' and is_vulnerable | bool
+      become: yes
